@@ -32,6 +32,7 @@ const MIN_TERMINAL_ROWS = 1;
 const PANEL_RESIZE_DRAGGING_EVENT = 'emdash:panel-resize-dragging';
 const IS_MAC_PLATFORM =
   typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+const IS_WINDOWS_PLATFORM = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform);
 
 // Store viewport positions per terminal ID to preserve scroll position across detach/attach cycles
 const viewportPositions = new Map<string, number>();
@@ -284,8 +285,8 @@ export class TerminalSessionManager {
         return false; // Prevent xterm from processing the copy shortcut
       }
 
-      // Handle Ctrl+Shift+V paste on Linux
-      if (shouldPasteToTerminal(event, IS_MAC_PLATFORM)) {
+      // Handle paste shortcuts across platforms (Cmd+V / Ctrl+V / Ctrl+Shift+V).
+      if (shouldPasteToTerminal(event, IS_MAC_PLATFORM, IS_WINDOWS_PLATFORM)) {
         event.preventDefault();
         event.stopImmediatePropagation();
         event.stopPropagation();
@@ -332,6 +333,19 @@ export class TerminalSessionManager {
 
       return true; // Let xterm handle all other keys normally
     });
+
+    // Right-click paste keeps terminal behavior consistent with desktop terminals,
+    // especially on Windows where users expect click-to-paste.
+    const handleContextMenuPaste = (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.focus();
+      this.pasteFromClipboard();
+    };
+    this.container.addEventListener('contextmenu', handleContextMenuPaste);
+    this.disposables.push(() =>
+      this.container.removeEventListener('contextmenu', handleContextMenuPaste)
+    );
 
     this.metrics = new TerminalMetrics({
       maxDataWindowBytes: MAX_DATA_WINDOW_BYTES,
@@ -668,6 +682,8 @@ export class TerminalSessionManager {
    * Used for Ctrl+Shift+V on Linux.
    */
   private pasteFromClipboard() {
+    this.focus();
+
     const paste = window.electronAPI?.paste;
     if (typeof paste !== 'function') {
       log.warn('Terminal paste API unavailable', { id: this.id });

@@ -97,47 +97,85 @@ describe('TerminalSessionManager - Shift+Enter to Ctrl+J mapping', () => {
     ).toBe(false);
   });
 
-  it('detects Ctrl+Shift+V paste on Linux only', () => {
+  it('detects platform-specific paste shortcuts', () => {
     const isMac = true;
     const isNotMac = false;
+    const isWindows = true;
+    const isNotWindows = false;
 
-    // Ctrl+Shift+V on Linux should trigger paste
+    // Linux: Ctrl+Shift+V should trigger paste
     expect(
-      shouldPasteToTerminal(makeEvent({ key: 'v', ctrlKey: true, shiftKey: true }), isNotMac)
+      shouldPasteToTerminal(
+        makeEvent({ key: 'v', ctrlKey: true, shiftKey: true }),
+        isNotMac,
+        isNotWindows
+      )
     ).toBe(true);
 
-    // Ctrl+Shift+V on macOS should NOT trigger paste (macOS uses Cmd+V)
+    // Linux: Ctrl+V alone should NOT trigger
     expect(
-      shouldPasteToTerminal(makeEvent({ key: 'v', ctrlKey: true, shiftKey: true }), isMac)
+      shouldPasteToTerminal(makeEvent({ key: 'v', ctrlKey: true }), isNotMac, isNotWindows)
     ).toBe(false);
 
-    // Ctrl+V alone should NOT trigger (that's SIGINT in terminals)
-    expect(shouldPasteToTerminal(makeEvent({ key: 'v', ctrlKey: true }), isNotMac)).toBe(false);
+    // macOS: Cmd+V should trigger
+    expect(shouldPasteToTerminal(makeEvent({ key: 'v', metaKey: true }), isMac, isNotWindows)).toBe(
+      true
+    );
+
+    // macOS: Ctrl+Shift+V should not trigger
+    expect(
+      shouldPasteToTerminal(
+        makeEvent({ key: 'v', ctrlKey: true, shiftKey: true }),
+        isMac,
+        isNotWindows
+      )
+    ).toBe(false);
+
+    // Windows: Ctrl+V should trigger
+    expect(shouldPasteToTerminal(makeEvent({ key: 'v', ctrlKey: true }), isNotMac, isWindows)).toBe(
+      true
+    );
+
+    // Windows: Ctrl+Shift+V should also trigger
+    expect(
+      shouldPasteToTerminal(
+        makeEvent({ key: 'v', ctrlKey: true, shiftKey: true }),
+        isNotMac,
+        isWindows
+      )
+    ).toBe(true);
 
     // Additional modifiers should NOT trigger
     expect(
       shouldPasteToTerminal(
         makeEvent({ key: 'v', ctrlKey: true, shiftKey: true, altKey: true }),
-        isNotMac
+        isNotMac,
+        isWindows
       )
     ).toBe(false);
     expect(
       shouldPasteToTerminal(
         makeEvent({ key: 'v', ctrlKey: true, shiftKey: true, metaKey: true }),
-        isNotMac
+        isNotMac,
+        isWindows
       )
     ).toBe(false);
 
     // Wrong key should NOT trigger
     expect(
-      shouldPasteToTerminal(makeEvent({ key: 'c', ctrlKey: true, shiftKey: true }), isNotMac)
+      shouldPasteToTerminal(
+        makeEvent({ key: 'c', ctrlKey: true, shiftKey: true }),
+        isNotMac,
+        isWindows
+      )
     ).toBe(false);
 
     // keyup should NOT trigger
     expect(
       shouldPasteToTerminal(
         makeEvent({ type: 'keyup', key: 'v', ctrlKey: true, shiftKey: true }),
-        isNotMac
+        isNotMac,
+        isWindows
       )
     ).toBe(false);
   });
