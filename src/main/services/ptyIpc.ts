@@ -893,22 +893,32 @@ export function registerPtyIpc(): void {
           }
         }
 
-        // Try direct spawn first; skip if shellSetup or tmux requires a shell wrapper
-        const directProc =
-          shellSetup || tmux
-            ? null
-            : startDirectPty({
-                id,
-                providerId,
-                cwd,
-                cols,
-                rows,
-                autoApprove,
-                initialPrompt,
-                env,
-                resume: effectiveResume,
-                tmux,
-              });
+        // Try direct spawn first; skip if shellSetup or tmux requires a shell wrapper.
+        // If direct spawn throws (e.g. Windows CLI shim edge cases), fall back to shell spawn.
+        let directProc: import('node-pty').IPty | null = null;
+        if (!shellSetup && !tmux) {
+          try {
+            directProc = startDirectPty({
+              id,
+              providerId,
+              cwd,
+              cols,
+              rows,
+              autoApprove,
+              initialPrompt,
+              env,
+              resume: effectiveResume,
+              tmux,
+            });
+          } catch (directErr) {
+            log.warn('pty:startDirect - direct spawn failed, using shell fallback', {
+              id,
+              providerId,
+              error: (directErr as Error)?.message || String(directErr),
+            });
+            directProc = null;
+          }
+        }
 
         // Fall back to shell-based spawn when direct spawn is unavailable or shellSetup/tmux is set
         let usedFallback = false;
@@ -916,21 +926,24 @@ export function registerPtyIpc(): void {
         if (directProc) {
           proc = directProc;
         } else {
+          const resolvedConfig = resolveProviderCommandConfig(providerId);
           const provider = getProvider(providerId as ProviderId);
-          if (!provider?.cli) {
+          const shellCommand = resolvedConfig?.cli || provider?.cli;
+          if (!shellCommand) {
             return { ok: false, error: `CLI path not found for provider: ${providerId}` };
           }
+          const mergedEnv = resolvedConfig?.env ? { ...resolvedConfig.env, ...env } : env;
           if (!shellSetup && !tmux)
             log.info('pty:startDirect - falling back to shell spawn', { id, providerId });
           proc = await startPty({
             id,
             cwd,
-            shell: provider.cli,
+            shell: shellCommand,
             cols,
             rows,
             autoApprove,
             initialPrompt,
-            env,
+            env: mergedEnv,
             skipResume: !resume,
             shellSetup,
             tmux,

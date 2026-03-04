@@ -127,6 +127,28 @@ import { errorTracking } from './errorTracking';
 import { join } from 'path';
 import { rmSync } from 'node:fs';
 
+function isIgnorablePipeError(error: unknown): boolean {
+  const err = error as NodeJS.ErrnoException | undefined;
+  const code = typeof err?.code === 'string' ? err.code : '';
+  const message = err?.message || String(error ?? '');
+  return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED' || /EPIPE/i.test(message);
+}
+
+const handleUncaughtException = (error: unknown) => {
+  if (isIgnorablePipeError(error)) {
+    console.warn('[main] Ignored uncaught pipe stream error:', {
+      code: (error as NodeJS.ErrnoException | undefined)?.code,
+      message: (error as Error | undefined)?.message || String(error ?? ''),
+    });
+    return;
+  }
+
+  // Preserve default crash behavior for real uncaught exceptions.
+  process.off('uncaughtException', handleUncaughtException);
+  throw error;
+};
+process.on('uncaughtException', handleUncaughtException);
+
 // Set app name for macOS dock and menu bar
 app.setName('Emdash');
 
