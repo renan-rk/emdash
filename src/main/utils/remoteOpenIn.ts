@@ -19,12 +19,62 @@ export function buildRemoteEditorUrl(
   scheme: RemoteEditorScheme,
   host: string,
   username: string,
-  targetPath: string
+  targetPath: string,
+  options?: {
+    port?: number | string;
+    sshAlias?: string;
+  }
 ): string {
-  const authority = buildRemoteSshAuthority(host, username);
+  const authority = buildRemoteEditorAuthority({
+    host,
+    username,
+    port: options?.port,
+    sshAlias: options?.sshAlias,
+  });
   const encodedAuthority = encodeURIComponent(authority);
   const normalizedTargetPath = targetPath.startsWith('/') ? targetPath : `/${targetPath}`;
   return `${scheme}://vscode-remote/ssh-remote+${encodedAuthority}${normalizedTargetPath}`;
+}
+
+function parsePort(value: number | string | undefined): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Builds the authority token consumed by VS Code / Cursor remote URL schemes.
+ *
+ * Priority:
+ * 1. Use SSH alias when available (best way to honor custom SSH config like Port/ProxyJump).
+ * 2. Otherwise use user@host, and append :port for non-default ports.
+ */
+export function buildRemoteEditorAuthority(input: {
+  host: string;
+  username: string;
+  port?: number | string;
+  sshAlias?: string;
+}): string {
+  const alias = input.sshAlias?.trim();
+  const user = input.username.trim();
+  if (alias) {
+    return user ? `${user}@${alias}` : alias;
+  }
+
+  const authority = buildRemoteSshAuthority(input.host, input.username);
+  const port = parsePort(input.port);
+  if (!port || port === 22) return authority;
+
+  // Avoid mangling IPv6 or already-qualified authorities.
+  if (authority.includes(':')) return authority;
+  return `${authority}:${port}`;
 }
 
 type GhosttyRemoteExecInput = {

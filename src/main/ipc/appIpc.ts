@@ -18,6 +18,7 @@ import {
   buildRemoteEditorUrl,
   buildRemoteSshCommand,
 } from '../utils/remoteOpenIn';
+import { buildCommandExistsProbe, quoteOpenInPath } from '../utils/openInShell';
 
 const UNKNOWN_VERSION = 'unknown';
 
@@ -69,6 +70,17 @@ const execFileCommand = (
 
 const escapeAppleScriptString = (value: string): string =>
   value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+const decodeSshConfigAlias = (connectionId?: string | null): string | undefined => {
+  if (!connectionId?.startsWith('ssh-config:')) return undefined;
+  const raw = connectionId.slice('ssh-config:'.length);
+  if (!raw) return undefined;
+  try {
+    return /%[0-9A-Fa-f]{2}/.test(raw) ? decodeURIComponent(raw) : raw;
+  } catch {
+    return raw;
+  }
+};
 
 const dedupeAndSortFonts = (fonts: string[]): string[] => {
   const unique = Array.from(new Set(fonts.map((font) => font.trim()).filter(Boolean)));
@@ -305,6 +317,7 @@ export function registerAppIpc() {
             if (!connection) {
               return { success: false, error: 'SSH connection not found' };
             }
+            const sshAlias = decodeSshConfigAlias(sshConnectionId);
 
             // Construct remote SSH URL or command based on the app
             // Security: Escape all user-controlled values to prevent command injection
@@ -315,7 +328,8 @@ export function registerAppIpc() {
                 'vscode',
                 connection.host,
                 connection.username,
-                target
+                target,
+                { port: connection.port, sshAlias }
               );
               await shell.openExternal(remoteUrl);
               return { success: true };
@@ -325,7 +339,8 @@ export function registerAppIpc() {
                 'cursor',
                 connection.host,
                 connection.username,
-                target
+                target,
+                { port: connection.port, sshAlias }
               );
               await shell.openExternal(remoteUrl);
               return { success: true };
@@ -438,8 +453,6 @@ export function registerAppIpc() {
           }
         }
 
-        const quoted = (p: string) => `'${p.replace(/'/g, "'\\''")}'`;
-
         // Handle URL-based apps (like Warp)
         if (platformConfig?.openUrls) {
           for (const urlTemplate of platformConfig.openUrls) {
@@ -464,10 +477,11 @@ export function registerAppIpc() {
         let command = '';
 
         if (commands.length > 0) {
+          const quotedPath = quoteOpenInPath(target, platform);
           command = commands
             .map((cmd: string) => {
               // Chain both replacements: first {{path}}, then {{path_raw}}
-              return cmd.replace('{{path}}', quoted(target)).replace('{{path_raw}}', target);
+              return cmd.replace('{{path}}', quotedPath).replace('{{path_raw}}', target);
             })
             .join(' || ');
         }
@@ -509,7 +523,7 @@ export function registerAppIpc() {
     // Helper to check if a command exists
     const checkCommand = (cmd: string): Promise<boolean> => {
       return new Promise((resolve) => {
-        exec(`command -v ${cmd} >/dev/null 2>&1`, { env: buildExternalToolEnv() }, (error) => {
+        exec(buildCommandExistsProbe(cmd, platform), { env: buildExternalToolEnv() }, (error) => {
           resolve(!error);
         });
       });

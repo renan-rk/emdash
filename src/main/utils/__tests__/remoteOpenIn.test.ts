@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildRemoteEditorAuthority,
   buildGhosttyRemoteExecArgs,
   buildRemoteEditorUrl,
   buildRemoteSshCommand,
@@ -32,6 +33,34 @@ describe('buildRemoteEditorUrl', () => {
     expect(buildRemoteEditorUrl('vscode', 'example.internal', 'azureuser', 'workspace')).toBe(
       'vscode://vscode-remote/ssh-remote+azureuser%40example.internal/workspace'
     );
+  });
+
+  it('uses SSH alias for remote URLs when provided', () => {
+    expect(
+      buildRemoteEditorUrl('vscode', '127.0.0.1', 'azureuser', '/workspace', {
+        port: 2222,
+        sshAlias: 'prod-jump',
+      })
+    ).toBe('vscode://vscode-remote/ssh-remote+azureuser%40prod-jump/workspace');
+  });
+
+  it('appends non-default ports when no SSH alias is available', () => {
+    expect(
+      buildRemoteEditorUrl('cursor', '127.0.0.1', 'azureuser', '/workspace', { port: 2222 })
+    ).toBe('cursor://vscode-remote/ssh-remote+azureuser%40127.0.0.1%3A2222/workspace');
+  });
+});
+
+describe('buildRemoteEditorAuthority', () => {
+  it('prefers alias over host and port', () => {
+    expect(
+      buildRemoteEditorAuthority({
+        host: '127.0.0.1',
+        username: 'azureuser',
+        port: 2222,
+        sshAlias: 'prod-jump',
+      })
+    ).toBe('azureuser@prod-jump');
   });
 });
 
