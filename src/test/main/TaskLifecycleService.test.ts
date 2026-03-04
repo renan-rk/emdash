@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 
 type MockChild = EventEmitter & {
+  stdin: EventEmitter;
   stdout: EventEmitter;
   stderr: EventEmitter;
   pid: number;
@@ -36,6 +37,7 @@ vi.mock('../../main/lib/logger', () => ({
 
 function createChild(pid: number, killImpl?: (signal?: NodeJS.Signals) => boolean): MockChild {
   const child = new EventEmitter() as MockChild;
+  child.stdin = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.pid = pid;
@@ -279,6 +281,34 @@ describe('TaskLifecycleService', () => {
     expect(setupResult.ok).toBe(false);
     expect(state.setup.status).toBe('failed');
     expect(state.setup.error).toBe('spawn failed');
+  });
+
+  it('ignores EPIPE stream errors from run process', async () => {
+    vi.resetModules();
+
+    const child = createChild(2551);
+    spawnMock.mockReturnValue(child);
+    getScriptMock.mockImplementation((_: string, phase: string) => {
+      if (phase === 'run') return 'npm run dev';
+      return null;
+    });
+
+    const { taskLifecycleService } = await import('../../main/services/TaskLifecycleService');
+
+    const taskId = 'wt-epipe';
+    const taskPath = '/tmp/wt-epipe';
+    const projectPath = '/tmp/project';
+
+    const startResult = await taskLifecycleService.startRun(taskId, taskPath, projectPath);
+    expect(startResult.ok).toBe(true);
+
+    const err = new Error('read EPIPE') as NodeJS.ErrnoException;
+    err.code = 'EPIPE';
+    expect(() => child.stdout.emit('error', err)).not.toThrow();
+
+    const state = taskLifecycleService.getState(taskId);
+    expect(state.run.status).toBe('running');
+    expect(state.run.error).toBeNull();
   });
 
   it('clearTask stops in-flight setup/teardown processes', async () => {

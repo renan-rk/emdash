@@ -34,6 +34,40 @@ class TaskLifecycleService extends EventEmitter {
     return new Date().toISOString();
   }
 
+  private isIgnorableStreamError(error: unknown): boolean {
+    const code =
+      typeof (error as NodeJS.ErrnoException | undefined)?.code === 'string'
+        ? (error as NodeJS.ErrnoException).code
+        : '';
+    return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED';
+  }
+
+  private attachChildStreamGuards(
+    child: ChildProcess,
+    taskId: string,
+    phase: 'setup' | 'run' | 'teardown'
+  ): void {
+    const onStreamError =
+      (stream: 'stdin' | 'stdout' | 'stderr') => (error: NodeJS.ErrnoException) => {
+        const message = error?.message || String(error);
+        if (this.isIgnorableStreamError(error)) {
+          log.warn('Lifecycle stream closed', {
+            taskId,
+            phase,
+            stream,
+            code: error?.code,
+            message,
+          });
+          return;
+        }
+        log.error('Lifecycle stream error', { taskId, phase, stream, code: error?.code, message });
+      };
+
+    child.stdin?.on('error', onStreamError('stdin'));
+    child.stdout?.on('error', onStreamError('stdout'));
+    child.stderr?.on('error', onStreamError('stderr'));
+  }
+
   private inflightKey(taskId: string, taskPath: string): string {
     return `${taskId}::${taskPath}`;
   }
@@ -193,6 +227,7 @@ class TaskLifecycleService extends EventEmitter {
             env,
             detached: true,
           });
+          this.attachChildStreamGuards(child, taskId, phase);
           const untrackFinite = this.trackFiniteProcess(taskId, child);
           const onData = (buf: Buffer) => {
             const line = buf.toString();
@@ -328,6 +363,7 @@ class TaskLifecycleService extends EventEmitter {
         env,
         detached: true,
       });
+      this.attachChildStreamGuards(child, taskId, 'run');
       this.runProcesses.set(taskId, child);
       state.run.pid = child.pid ?? null;
 
