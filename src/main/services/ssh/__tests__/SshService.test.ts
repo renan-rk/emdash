@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi, Mock } from 'vitest';
+import { EventEmitter } from 'events';
 import { SshService } from '../SshService';
 import { SshCredentialService } from '../SshCredentialService';
 import { SshConfig } from '../../../../shared/ssh/types';
@@ -486,6 +487,87 @@ describe('SshService', () => {
       const execCall = mockClientInstance.exec.mock.calls[0];
       expect(execCall[0]).toContain("'");
       expect(execCall[0]).toContain("'\\''");
+    });
+  });
+
+  describe('executeCommand stream error handling', () => {
+    it('ignores EPIPE from stderr stream and resolves on close', async () => {
+      const config: SshConfig = {
+        id: 'conn-epipe',
+        name: 'Test',
+        host: 'example.com',
+        port: 22,
+        username: 'user',
+        authType: 'password',
+      };
+
+      mockCredentialService.getPassword.mockResolvedValue('password');
+
+      const mockStream = new EventEmitter();
+      (mockStream as any).stderr = new EventEmitter();
+
+      mockClientInstance.connect.mockImplementation(() => {
+        const readyHandler = mockClientInstance.on.mock.calls.find(
+          (call: any) => call[0] === 'ready'
+        )?.[1];
+        if (readyHandler) setTimeout(() => readyHandler(), 0);
+      });
+
+      mockClientInstance.exec.mockImplementation(
+        (_command: string, callback: (err: Error | null, stream: any) => void) => {
+          callback(null, mockStream);
+          setTimeout(() => {
+            const epipe = new Error('read EPIPE') as NodeJS.ErrnoException;
+            epipe.code = 'EPIPE';
+            (mockStream as any).stderr.emit('error', epipe);
+            mockStream.emit('close', 0);
+          }, 0);
+        }
+      );
+
+      await service.connect(config);
+      await expect(service.executeCommand('conn-epipe', 'echo ok')).resolves.toMatchObject({
+        exitCode: 0,
+      });
+    });
+
+    it('rejects executeCommand on non-ignorable stderr stream errors', async () => {
+      const config: SshConfig = {
+        id: 'conn-stderr-error',
+        name: 'Test',
+        host: 'example.com',
+        port: 22,
+        username: 'user',
+        authType: 'password',
+      };
+
+      mockCredentialService.getPassword.mockResolvedValue('password');
+
+      const mockStream = new EventEmitter();
+      (mockStream as any).stderr = new EventEmitter();
+
+      mockClientInstance.connect.mockImplementation(() => {
+        const readyHandler = mockClientInstance.on.mock.calls.find(
+          (call: any) => call[0] === 'ready'
+        )?.[1];
+        if (readyHandler) setTimeout(() => readyHandler(), 0);
+      });
+
+      mockClientInstance.exec.mockImplementation(
+        (_command: string, callback: (err: Error | null, stream: any) => void) => {
+          callback(null, mockStream);
+          setTimeout(() => {
+            const streamErr = new Error('stderr stream broken') as NodeJS.ErrnoException;
+            streamErr.code = 'ECONNRESET';
+            (mockStream as any).stderr.emit('error', streamErr);
+          }, 0);
+        }
+      );
+
+      await service.connect(config);
+      await expect(service.executeCommand('conn-stderr-error', 'echo ok')).rejects.toThrow(
+        'stderr stream broken'
+      );
     });
   });
 });

@@ -296,7 +296,11 @@ export class SshService extends EventEmitter {
 
         let stdout = '';
         let stderr = '';
-        stream.on('close', (code: number | null) => {
+        let settled = false;
+
+        const finalizeResolve = (code: number | null) => {
+          if (settled) return;
+          settled = true;
           // ssh2 reports `code` as null when a signal terminates the process.
           // Keep ExecResult.exitCode as a number for simpler downstream typing.
           const exitCode = code ?? -1;
@@ -305,6 +309,23 @@ export class SshService extends EventEmitter {
             stderr: stderr.trim(),
             exitCode,
           });
+        };
+
+        const finalizeReject = (streamErr: unknown) => {
+          if (settled) return;
+          settled = true;
+          reject(streamErr instanceof Error ? streamErr : new Error(String(streamErr)));
+        };
+
+        const isIgnorableStreamError = (streamErr: unknown): boolean => {
+          const err = streamErr as NodeJS.ErrnoException | undefined;
+          const code = typeof err?.code === 'string' ? err.code : '';
+          const message = err?.message || String(streamErr ?? '');
+          return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED' || /EPIPE/i.test(message);
+        };
+
+        stream.on('close', (code: number | null) => {
+          finalizeResolve(code);
         });
 
         stream.on('data', (data: Buffer) => {
@@ -316,7 +337,13 @@ export class SshService extends EventEmitter {
         });
 
         stream.on('error', (streamErr: Error) => {
-          reject(streamErr);
+          if (isIgnorableStreamError(streamErr)) return;
+          finalizeReject(streamErr);
+        });
+
+        stream.stderr.on('error', (streamErr: Error) => {
+          if (isIgnorableStreamError(streamErr)) return;
+          finalizeReject(streamErr);
         });
       });
     });
