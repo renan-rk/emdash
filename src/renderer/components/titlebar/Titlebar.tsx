@@ -276,6 +276,7 @@ const Titlebar: React.FC<TitlebarProps> = ({
               taskId={taskId}
               taskPath={taskPath}
               parentProjectPath={projectPath}
+              isRemoteProject={Boolean(selectedProject?.isRemote)}
             />
           ) : null}
           <TooltipProvider delayDuration={200}>

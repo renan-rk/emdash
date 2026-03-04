@@ -18,9 +18,15 @@ interface Props {
   taskId?: string | null;
   taskPath?: string | null;
   parentProjectPath?: string | null;
+  isRemoteProject?: boolean;
 }
 
-const BrowserToggleButton: React.FC<Props> = ({ taskId, taskPath, parentProjectPath }) => {
+const BrowserToggleButton: React.FC<Props> = ({
+  taskId,
+  taskPath,
+  parentProjectPath,
+  isRemoteProject = false,
+}) => {
   const browser = useBrowser();
   async function needsInstall(path?: string | null): Promise<boolean> {
     const p = (path || '').trim();
@@ -114,17 +120,24 @@ const BrowserToggleButton: React.FC<Props> = ({ taskId, taskPath, parentProjectP
       } catch {}
     }
 
+    if (isRemoteProject) {
+      browser.hideSpinner();
+      return;
+    }
+
     // Auto-run: setup (if needed) + start, then probe common ports; also rely on URL events
     if (id && wp) {
       try {
         const installed = isInstalled(id);
         // If install needed, run setup first (only when sentinel not present)
         if (!installed && (await needsInstall(wp))) {
-          await (window as any).electronAPI?.hostPreviewSetup?.({
+          const setupResult = await (window as any).electronAPI?.hostPreviewSetup?.({
             taskId: id,
             taskPath: wp,
           });
-          setInstalled(id, true);
+          if (setupResult?.ok) {
+            setInstalled(id, true);
+          }
         }
         const running = isRunning(id);
         if (!running) {
