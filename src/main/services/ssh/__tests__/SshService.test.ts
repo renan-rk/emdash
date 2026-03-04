@@ -570,4 +570,40 @@ describe('SshService', () => {
       );
     });
   });
+
+  describe('getSftp stream error handling', () => {
+    it('attaches SFTP error listener so EPIPE does not throw', async () => {
+      const config: SshConfig = {
+        id: 'conn-sftp-epipe',
+        name: 'SFTP Test',
+        host: 'example.com',
+        port: 22,
+        username: 'user',
+        authType: 'password',
+      };
+
+      mockCredentialService.getPassword.mockResolvedValue('password');
+
+      const mockSftp = new EventEmitter();
+      (mockSftp as any).end = vi.fn();
+
+      mockClientInstance.connect.mockImplementation(() => {
+        const readyHandler = mockClientInstance.on.mock.calls.find(
+          (call: any) => call[0] === 'ready'
+        )?.[1];
+        if (readyHandler) setTimeout(() => readyHandler(), 0);
+      });
+
+      mockClientInstance.sftp.mockImplementation((cb: (err: Error | null, sftp?: any) => void) => {
+        cb(null, mockSftp as any);
+      });
+
+      await service.connect(config);
+      await service.getSftp('conn-sftp-epipe');
+
+      const epipe = new Error('read EPIPE') as NodeJS.ErrnoException;
+      epipe.code = 'EPIPE';
+      expect(() => mockSftp.emit('error', epipe)).not.toThrow();
+    });
+  });
 });

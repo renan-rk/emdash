@@ -34,6 +34,13 @@ export class SshService extends EventEmitter {
     this.credentialService = credentialService ?? new SshCredentialService();
   }
 
+  private isIgnorablePipeError(streamErr: unknown): boolean {
+    const err = streamErr as NodeJS.ErrnoException | undefined;
+    const code = typeof err?.code === 'string' ? err.code : '';
+    const message = err?.message || String(streamErr ?? '');
+    return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED' || /EPIPE/i.test(message);
+  }
+
   /**
    * Establishes a new SSH connection.
    *
@@ -243,10 +250,12 @@ export class SshService extends EventEmitter {
         await new Promise<void>((resolve) => {
           const sftp = connection.sftp!;
           const timeout = setTimeout(() => resolve(), 2000); // 2s safety timeout
-          sftp.once('close', () => {
+          const finish = () => {
             clearTimeout(timeout);
             resolve();
-          });
+          };
+          sftp.once('close', finish);
+          sftp.once('error', finish);
           sftp.end();
         });
       } catch {
@@ -317,13 +326,6 @@ export class SshService extends EventEmitter {
           reject(streamErr instanceof Error ? streamErr : new Error(String(streamErr)));
         };
 
-        const isIgnorableStreamError = (streamErr: unknown): boolean => {
-          const err = streamErr as NodeJS.ErrnoException | undefined;
-          const code = typeof err?.code === 'string' ? err.code : '';
-          const message = err?.message || String(streamErr ?? '');
-          return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED' || /EPIPE/i.test(message);
-        };
-
         stream.on('close', (code: number | null) => {
           finalizeResolve(code);
         });
@@ -337,12 +339,12 @@ export class SshService extends EventEmitter {
         });
 
         stream.on('error', (streamErr: Error) => {
-          if (isIgnorableStreamError(streamErr)) return;
+          if (this.isIgnorablePipeError(streamErr)) return;
           finalizeReject(streamErr);
         });
 
         stream.stderr.on('error', (streamErr: Error) => {
-          if (isIgnorableStreamError(streamErr)) return;
+          if (this.isIgnorablePipeError(streamErr)) return;
           finalizeReject(streamErr);
         });
       });
@@ -373,6 +375,23 @@ export class SshService extends EventEmitter {
           reject(err);
           return;
         }
+
+        // Guard against unhandled SFTP stream errors during teardown/disconnect.
+        sftp.on('error', (sftpErr: Error) => {
+          if (this.isIgnorablePipeError(sftpErr)) {
+            return;
+          }
+          console.warn(
+            `[SshService] SFTP stream error for ${connectionId}:`,
+            sftpErr?.message || String(sftpErr)
+          );
+        });
+
+        sftp.on('close', () => {
+          if (connection.sftp === sftp) {
+            connection.sftp = undefined;
+          }
+        });
 
         connection.sftp = sftp;
         connection.lastActivity = new Date();
