@@ -74,7 +74,7 @@ export const OPEN_IN_APPS: OpenInAppConfigShape[] = [
         appNames: ['Cursor'],
       },
       win32: {
-        openCommands: ['start "" cursor {{path}}'],
+        openCommands: ['cursor {{path}}'],
         checkCommands: ['cursor'],
       },
       linux: {
@@ -101,7 +101,7 @@ export const OPEN_IN_APPS: OpenInAppConfigShape[] = [
         appNames: ['Visual Studio Code'],
       },
       win32: {
-        openCommands: ['start "" code {{path}}', 'start "" code-insiders {{path}}'],
+        openCommands: ['code {{path}}', 'code-insiders {{path}}'],
         checkCommands: ['code', 'code-insiders'],
       },
       linux: {
@@ -212,7 +212,7 @@ export const OPEN_IN_APPS: OpenInAppConfigShape[] = [
         appNames: ['Kiro'],
       },
       win32: {
-        openCommands: ['start "" kiro {{path}}'],
+        openCommands: ['kiro {{path}}'],
         checkCommands: ['kiro'],
       },
       linux: {
