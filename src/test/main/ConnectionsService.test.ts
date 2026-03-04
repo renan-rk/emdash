@@ -178,8 +178,32 @@ describe('ConnectionsService – resolveStatus', () => {
     expect(secondCall).toBeDefined();
     // Should invoke a shell (e.g. /bin/zsh or /bin/bash) with login+interactive flags
     const shellCmd = secondCall[0] as string;
+    expect(typeof shellCmd).toBe('string');
     const shellArgs = secondCall[1] as string[];
     expect(shellArgs.some((a: string) => a.includes('claude'))).toBe(true);
-    expect(shellArgs.some((a: string) => a.includes('-l'))).toBe(true);
+    if (process.platform === 'win32') {
+      expect(shellArgs.some((a: string) => a === '/c')).toBe(true);
+    } else {
+      expect(shellArgs.some((a: string) => a.includes('-l'))).toBe(true);
+    }
+  });
+
+  it('marks provider as missing when Windows shell fallback reports command not recognized', async () => {
+    whichReturns(null);
+    const err = new Error('spawn claude ENOENT') as NodeJS.ErrnoException;
+    err.code = 'ENOENT';
+    spawnEmits(
+      { error: err },
+      {
+        stderr:
+          "'claude' não é reconhecido como um comando interno ou externo, um programa operável ou um arquivo em lotes.\n",
+        closeCode: 1,
+      }
+    );
+
+    const { connectionsService } = await import('../../main/services/ConnectionsService');
+    await connectionsService.checkProvider('claude', 'manual');
+
+    expect(statusMap.claude?.installed).toBe(false);
   });
 });

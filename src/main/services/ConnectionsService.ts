@@ -41,6 +41,9 @@ const truncate = (input: string, max = 400): string =>
   input && input.length > max ? `${input.slice(0, max)}…` : input;
 
 const DEFAULT_TIMEOUT_MS = 3000;
+const WINDOWS_CMD_NOT_FOUND_RE =
+  /is not recognized as an internal or external command|não é reconhecido como um comando interno ou externo/i;
+const POSIX_CMD_NOT_FOUND_RE = /command not found|not found/i;
 
 const quoteForCmdExe = (input: string): string => {
   if (input.length === 0) return '""';
@@ -166,6 +169,10 @@ class ConnectionsService {
       return def.statusResolver(result);
     }
 
+    if (this.isCommandMissing(result)) {
+      return 'missing';
+    }
+
     if (result.success) {
       return 'connected';
     }
@@ -183,6 +190,21 @@ class ConnectionsService {
     }
 
     return result.error ? 'error' : 'missing';
+  }
+
+  private isCommandMissing(result: CommandResult): boolean {
+    const errno = (result.error as NodeJS.ErrnoException | undefined)?.code;
+    if (errno === 'ENOENT') return true;
+
+    if (result.status === 127 || result.status === 9009) return true;
+
+    const combined = [result.stderr, result.stdout].filter(Boolean).join('\n').trim();
+    if (!combined) return false;
+
+    if (WINDOWS_CMD_NOT_FOUND_RE.test(combined)) return true;
+    if (POSIX_CMD_NOT_FOUND_RE.test(combined)) return true;
+
+    return false;
   }
 
   private resolveMessage(
