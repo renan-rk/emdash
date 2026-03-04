@@ -44,6 +44,7 @@ const DEFAULT_TIMEOUT_MS = 3000;
 const WINDOWS_CMD_NOT_FOUND_RE =
   /is not recognized as an internal or external command|não\s+é\s+reconhecido\s+como\s+um\s+comando\s+interno\s+ou\s+externo/i;
 const POSIX_CMD_NOT_FOUND_RE = /command not found|not found/i;
+const WINDOWS_EXECUTABLE_EXT_RE = /\.(exe|cmd|bat|com)$/i;
 
 const quoteForCmdExe = (input: string): string => {
   if (input.length === 0) return '""';
@@ -68,6 +69,37 @@ class ConnectionsService {
   private initialized = false;
   private timeoutRetryPending = new Set<string>();
   private timeoutRetryTimers = new Map<string, NodeJS.Timeout>();
+
+  private isIgnorablePipeError(error: unknown): boolean {
+    const err = error as NodeJS.ErrnoException | undefined;
+    const code = typeof err?.code === 'string' ? err.code : '';
+    const message = err?.message || String(error ?? '');
+    return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED' || /EPIPE/i.test(message);
+  }
+
+  private attachChildStreamGuards(
+    child: ReturnType<typeof spawn>,
+    command: string,
+    executable: string
+  ): void {
+    const onStreamError =
+      (stream: 'stdin' | 'stdout' | 'stderr') => (error: NodeJS.ErrnoException) => {
+        if (this.isIgnorablePipeError(error)) {
+          return;
+        }
+        log.warn('provider:command-stream-error', {
+          command,
+          executable,
+          stream,
+          code: error?.code,
+          message: error?.message || String(error),
+        });
+      };
+
+    child.stdin?.on('error', onStreamError('stdin'));
+    child.stdout?.on('error', onStreamError('stdout'));
+    child.stderr?.on('error', onStreamError('stderr'));
+  }
 
   private clearTimeoutRetry(providerId: string) {
     const pendingTimer = this.timeoutRetryTimers.get(providerId);
@@ -270,7 +302,7 @@ class ConnectionsService {
     const shellArgs = process.platform === 'win32' ? ['/c', fullCmd] : ['-lc', fullCmd];
     const result = await this.runCommand(shell, shellArgs, timeoutMs);
 
-    if (result.status === 127) {
+    if (this.isCommandMissing(result)) {
       return {
         ...result,
         command,
@@ -305,7 +337,8 @@ class ConnectionsService {
               '/c',
               [executable, ...args].map(quoteForCmdExe).join(' '),
             ])
-          : spawn(command, args);
+          : spawn(executable, args);
+        this.attachChildStreamGuards(child, command, executable);
 
         let stdout = '';
         let stderr = '';
@@ -407,8 +440,14 @@ class ConnectionsService {
       const result = execFileSync(resolver, [command], { encoding: 'utf8' });
       const lines = result
         .split(/\r?\n/)
-        .map((l) => l.trim())
+        .map((l) => l.trim().replace(/^"|"$/g, ''))
         .filter(Boolean);
+
+      if (process.platform === 'win32') {
+        const executablePath = lines.find((line) => WINDOWS_EXECUTABLE_EXT_RE.test(line));
+        return executablePath ?? lines[0] ?? null;
+      }
+
       return lines[0] ?? null;
     } catch {
       return null;

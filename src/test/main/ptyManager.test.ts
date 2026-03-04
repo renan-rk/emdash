@@ -163,6 +163,44 @@ describe('ptyManager provider command resolution', () => {
       }
     }
   });
+
+  it('normalizes extensionless cached Windows paths to .cmd for direct spawn', async () => {
+    const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const originalEnv = { ...process.env };
+    Object.defineProperty(process, 'platform', {
+      value: 'win32',
+      configurable: true,
+    });
+
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'emdash-codex-path-'));
+    const codexCmdPath = path.join(tempDir, 'codex.cmd');
+    writeFileSync(codexCmdPath, '');
+
+    process.env = {
+      ...process.env,
+      PATH: tempDir,
+      Path: tempDir,
+      PATHEXT: '.EXE;.CMD;.BAT',
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+    };
+
+    providerStatusGetMock.mockReturnValue({
+      installed: true,
+      path: path.join(tempDir, 'codex'),
+    });
+
+    try {
+      const { normalizeCliPathForDirectSpawn } = await import('../../main/services/ptyManager');
+      const normalized = normalizeCliPathForDirectSpawn(path.join(tempDir, 'codex'));
+      expect(normalized?.toLowerCase()).toBe(codexCmdPath.toLowerCase());
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+      process.env = { ...originalEnv };
+      if (originalPlatformDescriptor) {
+        Object.defineProperty(process, 'platform', originalPlatformDescriptor);
+      }
+    }
+  });
 });
 
 describe('ptyManager SSH spawn resolution', () => {

@@ -36,6 +36,7 @@ vi.mock('../../main/services/providerStatusCache', () => ({
 // ── helpers ──────────────────────────────────────────────────────────
 
 type FakeChild = EventEmitter & {
+  stdin: EventEmitter;
   stdout: EventEmitter;
   stderr: EventEmitter;
   kill: Mock;
@@ -44,6 +45,7 @@ type FakeChild = EventEmitter & {
 /** Create a fake child process that emits events on demand. */
 function fakeChild(): FakeChild {
   const child = new EventEmitter() as FakeChild;
+  child.stdin = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.kill = vi.fn();
@@ -58,6 +60,9 @@ function spawnEmits(
   ...scenarios: Array<{
     stdout?: string;
     stderr?: string;
+    stdinError?: NodeJS.ErrnoException;
+    stdoutError?: NodeJS.ErrnoException;
+    stderrError?: NodeJS.ErrnoException;
     closeCode?: number | null;
     error?: NodeJS.ErrnoException;
   }>
@@ -69,6 +74,9 @@ function spawnEmits(
       process.nextTick(() => {
         if (scenario.stdout) child.stdout.emit('data', scenario.stdout);
         if (scenario.stderr) child.stderr.emit('data', scenario.stderr);
+        if (scenario.stdinError) child.stdin.emit('error', scenario.stdinError);
+        if (scenario.stdoutError) child.stdout.emit('error', scenario.stdoutError);
+        if (scenario.stderrError) child.stderr.emit('error', scenario.stderrError);
         if (scenario.error) {
           child.emit('error', scenario.error);
         } else {
@@ -113,6 +121,19 @@ describe('ConnectionsService – resolveStatus', () => {
 
     expect(statusMap.claude?.installed).toBe(true);
     expect(statusMap.claude?.version).toBe('2.1.56');
+    expect(spawnMock).toHaveBeenCalledWith('/usr/local/bin/claude', ['--version']);
+  });
+
+  it('ignores EPIPE stream errors from child stdio while checking versions', async () => {
+    whichReturns('/usr/local/bin/claude');
+    const epipe = new Error('read EPIPE') as NodeJS.ErrnoException;
+    epipe.code = 'EPIPE';
+    spawnEmits({ stdout: '2.1.56 (Claude Code)\n', stdoutError: epipe, closeCode: 0 });
+
+    const { connectionsService } = await import('../../main/services/ConnectionsService');
+    await connectionsService.checkProvider('claude', 'manual');
+
+    expect(statusMap.claude?.installed).toBe(true);
   });
 
   it('marks provider as installed when --version exits non-zero but binary exists (resolvedPath)', async () => {
@@ -224,5 +245,33 @@ describe('ConnectionsService – resolveStatus', () => {
     await connectionsService.checkProvider('codebuff', 'manual');
 
     expect(statusMap.codebuff?.installed).toBe(false);
+  });
+
+  it('prefers .cmd path from where output on Windows', async () => {
+    const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', {
+      value: 'win32',
+      configurable: true,
+    });
+
+    try {
+      execFileSyncMock.mockReturnValue(
+        'C:\\Program Files\\nodejs\\codex\r\nC:\\Program Files\\nodejs\\codex.cmd\r\n'
+      );
+      spawnEmits({ stdout: '0.107.0\n', closeCode: 0 });
+
+      const { connectionsService } = await import('../../main/services/ConnectionsService');
+      await connectionsService.checkProvider('codex', 'manual');
+
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(spawnMock.mock.calls[0][0]).toBe(process.env.ComSpec || 'cmd.exe');
+      const cmdArgs = spawnMock.mock.calls[0][1] as string[];
+      expect(cmdArgs.join(' ')).toContain('codex.cmd');
+      expect(statusMap.codex?.installed).toBe(true);
+    } finally {
+      if (originalPlatformDescriptor) {
+        Object.defineProperty(process, 'platform', originalPlatformDescriptor);
+      }
+    }
   });
 });

@@ -677,6 +677,12 @@ function resolveCommandPathCached(command: string): string | null {
   return resolved;
 }
 
+export function normalizeCliPathForDirectSpawn(cliPath: string): string | null {
+  const trimmed = cliPath.trim();
+  if (!trimmed) return null;
+  return resolveCommandPath(trimmed);
+}
+
 function resolveWindowsCommandViaWhere(command: string): string | null {
   if (process.platform !== 'win32') return null;
   const trimmed = command.trim();
@@ -737,6 +743,13 @@ export function resolveSshCommand(): string {
 
 function needsShellResolution(command: string): boolean {
   return /[|&;<>()$`]/.test(command);
+}
+
+function isSpawnPathResolutionError(error: unknown): boolean {
+  const err = error as NodeJS.ErrnoException | undefined;
+  const code = typeof err?.code === 'string' ? err.code : '';
+  const message = err?.message || String(error ?? '');
+  return code === 'ENOENT' || /ENOENT|file not found/i.test(message);
 }
 
 // Callback to spawn shell after direct CLI exits (set by ptyIpc)
@@ -886,6 +899,18 @@ export function startDirectPty(options: {
 
   let cliPath = status.path;
 
+  // Provider cache may hold extensionless shim paths on Windows (e.g. "...\\codex").
+  // Normalize to an executable path so node-pty can spawn it reliably.
+  const normalizedCliPath = normalizeCliPathForDirectSpawn(cliPath);
+  if (!normalizedCliPath) {
+    log.warn('ptyManager:directSpawn - CLI path is not executable, using fallback', {
+      providerId,
+      cliPath,
+    });
+    return null;
+  }
+  cliPath = normalizedCliPath;
+
   // Direct spawn requires an executable path. If custom CLI is an alias or shell
   // expression, fall back to shell mode.
   if (provider && resolvedConfig && resolvedConfig.cli !== provider.cli) {
@@ -999,13 +1024,26 @@ export function startDirectPty(options: {
   }
 
   const spawnSpec = resolveWindowsPtySpawn(cliPath, cliArgs);
-  const proc = pty.spawn(spawnSpec.command, spawnSpec.args, {
-    name: 'xterm-256color',
-    cols,
-    rows,
-    cwd,
-    env: useEnv,
-  });
+  let proc: IPty;
+  try {
+    proc = pty.spawn(spawnSpec.command, spawnSpec.args, {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd,
+      env: useEnv,
+    });
+  } catch (error) {
+    if (isSpawnPathResolutionError(error)) {
+      log.warn('ptyManager:directSpawn - spawn failed due to path resolution, using fallback', {
+        providerId,
+        cliPath,
+        error: (error as Error)?.message || String(error),
+      });
+      return null;
+    }
+    throw error;
+  }
 
   // Store record with cwd for shell respawn after CLI exits
   ptys.set(id, { id, proc, cwd, isDirectSpawn: true, kind: 'local', cols, rows });
