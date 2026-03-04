@@ -42,7 +42,7 @@ const truncate = (input: string, max = 400): string =>
 
 const DEFAULT_TIMEOUT_MS = 3000;
 const WINDOWS_CMD_NOT_FOUND_RE =
-  /is not recognized as an internal or external command|não é reconhecido como um comando interno ou externo/i;
+  /is not recognized as an internal or external command|não\s+é\s+reconhecido\s+como\s+um\s+comando\s+interno\s+ou\s+externo/i;
 const POSIX_CMD_NOT_FOUND_RE = /command not found|not found/i;
 
 const quoteForCmdExe = (input: string): string => {
@@ -200,9 +200,10 @@ class ConnectionsService {
 
     const combined = [result.stderr, result.stdout].filter(Boolean).join('\n').trim();
     if (!combined) return false;
+    const normalizedCombined = combined.replace(/\s+/g, ' ');
 
-    if (WINDOWS_CMD_NOT_FOUND_RE.test(combined)) return true;
-    if (POSIX_CMD_NOT_FOUND_RE.test(combined)) return true;
+    if (WINDOWS_CMD_NOT_FOUND_RE.test(normalizedCombined)) return true;
+    if (POSIX_CMD_NOT_FOUND_RE.test(normalizedCombined)) return true;
 
     return false;
   }

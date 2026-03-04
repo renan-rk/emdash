@@ -206,4 +206,23 @@ describe('ConnectionsService – resolveStatus', () => {
 
     expect(statusMap.claude?.installed).toBe(false);
   });
+
+  it('marks provider as missing when Windows fallback output splits sentence across new lines', async () => {
+    whichReturns(null);
+    const err = new Error('spawn codebuff ENOENT') as NodeJS.ErrnoException;
+    err.code = 'ENOENT';
+    spawnEmits(
+      { error: err },
+      {
+        stderr:
+          "'codebuff' não é reconhecido como um comando interno\r\nou externo, um programa operável ou um arquivo em lotes.\r\n",
+        closeCode: 1,
+      }
+    );
+
+    const { connectionsService } = await import('../../main/services/ConnectionsService');
+    await connectionsService.checkProvider('codebuff', 'manual');
+
+    expect(statusMap.codebuff?.installed).toBe(false);
+  });
 });
