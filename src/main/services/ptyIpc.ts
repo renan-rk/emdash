@@ -106,6 +106,10 @@ function buildRemoteInitKeystrokes(args: {
   tmux?: { sessionName: string };
 }): string {
   const lines: string[] = [];
+  const clearScreenCommand = "printf '\\033[3J\\033[H\\033[2J'";
+  // Clear login banners/MOTD noise from SSH sessions before showing the working shell/agent UI.
+  lines.push(clearScreenCommand);
+
   if (args.cwd) {
     // Keep this line shell-agnostic (works in zsh/bash/fish); avoid POSIX `||` which fish doesn't support.
     // If `cd` fails, the shell will print its own error message.
@@ -123,12 +127,12 @@ function buildRemoteInitKeystrokes(args: {
       // tmux new-session -As creates-or-attaches in one command.
       // Falls back to running without tmux if tmux isn't installed on the remote.
       const tmuxName = quoteShellArg(args.tmux.sessionName);
-      const shScript = `if command -v ${quoteShellArg(cli)} >/dev/null 2>&1; then if command -v tmux >/dev/null 2>&1; then exec tmux new-session -As ${tmuxName} -- sh -c ${quoteShellArg(args.provider.cmd)}; else printf '%s\\n' 'emdash: tmux not found on remote, running without session persistence'; exec ${args.provider.cmd}; fi; else printf '%s\\n' ${quoteShellArg(
+      const shScript = `if command -v ${quoteShellArg(cli)} >/dev/null 2>&1; then ${clearScreenCommand}; if command -v tmux >/dev/null 2>&1; then exec tmux new-session -As ${tmuxName} -- sh -c ${quoteShellArg(args.provider.cmd)}; else printf '%s\\n' 'emdash: tmux not found on remote, running without session persistence'; exec ${args.provider.cmd}; fi; else printf '%s\\n' ${quoteShellArg(
         msg
       )}; fi`;
       lines.push(`sh -c ${quoteShellArg(shScript)}`);
     } else {
-      const shScript = `if command -v ${quoteShellArg(cli)} >/dev/null 2>&1; then exec ${args.provider.cmd}; else printf '%s\\n' ${quoteShellArg(
+      const shScript = `if command -v ${quoteShellArg(cli)} >/dev/null 2>&1; then ${clearScreenCommand}; exec ${args.provider.cmd}; else printf '%s\\n' ${quoteShellArg(
         msg
       )}; fi`;
       lines.push(`sh -c ${quoteShellArg(shScript)}`);
