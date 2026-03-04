@@ -13,6 +13,8 @@ export type HostPreviewEvent = {
   line?: string;
 };
 
+type HostPreviewResult = { ok: boolean; error?: string };
+
 function detectPackageManager(dir: string): 'pnpm' | 'yarn' | 'npm' {
   try {
     if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml'))) return 'pnpm';
@@ -36,12 +38,122 @@ function normalizeUrl(u: string): string {
   }
 }
 
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error);
+}
+
+function resolvePreviewCwd(
+  taskPath: string
+): { ok: true; cwd: string } | { ok: false; error: string } {
+  const input = String(taskPath || '').trim();
+  if (!input) return { ok: false, error: 'taskPath is required' };
+  const cwd = path.resolve(input);
+  try {
+    const st = fs.statSync(cwd);
+    if (!st.isDirectory()) {
+      return { ok: false, error: `Task path is not a directory: ${cwd}` };
+    }
+    return { ok: true, cwd };
+  } catch {
+    return { ok: false, error: `Task path does not exist: ${cwd}` };
+  }
+}
+
+function resolvePreviewShell(): true | string {
+  if (process.platform !== 'win32') return true;
+
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  const candidates = [process.env.ComSpec, `${systemRoot}\\System32\\cmd.exe`, 'cmd.exe']
+    .map((candidate) => (candidate || '').trim())
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (candidate.includes('\\') || candidate.includes('/')) {
+      if (fs.existsSync(candidate)) return candidate;
+      continue;
+    }
+    return candidate;
+  }
+
+  return 'cmd.exe';
+}
+
 class HostPreviewService extends EventEmitter {
   private procs = new Map<string, ChildProcessWithoutNullStreams>();
   private procCwds = new Map<string, string>(); // Track cwd for each taskId
 
+  private emitSetupError(taskId: string, error: string): void {
+    try {
+      this.emit('event', {
+        type: 'setup',
+        taskId,
+        status: 'error',
+        line: error,
+      } as HostPreviewEvent);
+    } catch {}
+    try {
+      this.emit('event', { type: 'exit', taskId } as HostPreviewEvent);
+    } catch {}
+  }
+
+  private attachChildStreamGuards(
+    child: ChildProcessWithoutNullStreams,
+    taskId: string,
+    stage: 'setup' | 'install' | 'start'
+  ): void {
+    const onStreamError =
+      (stream: 'stdin' | 'stdout' | 'stderr') => (error: NodeJS.ErrnoException) => {
+        const message = toErrorMessage(error);
+        const code = typeof error?.code === 'string' ? error.code : undefined;
+        if (code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED') {
+          log.warn?.('[hostPreview] stream closed', {
+            taskId,
+            stage,
+            stream,
+            code,
+            message,
+          });
+          return;
+        }
+        log.error('[hostPreview] stream error', {
+          taskId,
+          stage,
+          stream,
+          code,
+          message,
+        });
+      };
+
+    child.stdin.on('error', onStreamError('stdin'));
+    child.stdout.on('error', onStreamError('stdout'));
+    child.stderr.on('error', onStreamError('stderr'));
+  }
+
+  private waitForSpawn(child: ChildProcessWithoutNullStreams): Promise<HostPreviewResult> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result: HostPreviewResult) => {
+        if (settled) return;
+        settled = true;
+        child.off('spawn', onSpawn);
+        child.off('error', onError);
+        resolve(result);
+      };
+      const onSpawn = () => finish({ ok: true });
+      const onError = (error: unknown) => finish({ ok: false, error: toErrorMessage(error) });
+      child.once('spawn', onSpawn);
+      child.once('error', onError);
+    });
+  }
+
   async setup(taskId: string, taskPath: string): Promise<{ ok: boolean; error?: string }> {
-    const cwd = path.resolve(taskPath);
+    const resolved = resolvePreviewCwd(taskPath);
+    if (!resolved.ok) {
+      this.emitSetupError(taskId, resolved.error);
+      return { ok: false, error: resolved.error };
+    }
+    const cwd = resolved.cwd;
     const pm = detectPackageManager(cwd);
     const cmd = pm;
     // Prefer clean install for npm when lockfile exists
@@ -50,9 +162,10 @@ class HostPreviewService extends EventEmitter {
     try {
       const child = spawn(cmd, args, {
         cwd,
-        shell: true,
+        shell: resolvePreviewShell(),
         env: { ...process.env, BROWSER: 'none' },
       });
+      this.attachChildStreamGuards(child, taskId, 'setup');
       this.emit('event', { type: 'setup', taskId, status: 'starting' } as HostPreviewEvent);
       const onData = (buf: Buffer) => {
         const line = buf.toString();
@@ -74,14 +187,10 @@ class HostPreviewService extends EventEmitter {
       });
       this.emit('event', { type: 'setup', taskId, status: 'done' } as HostPreviewEvent);
       return { ok: true };
-    } catch (e: any) {
-      this.emit('event', {
-        type: 'setup',
-        taskId,
-        status: 'error',
-        line: e?.message || String(e),
-      } as HostPreviewEvent);
-      return { ok: false, error: e?.message || String(e) };
+    } catch (error: unknown) {
+      const message = toErrorMessage(error);
+      this.emitSetupError(taskId, message);
+      return { ok: false, error: message };
     }
   }
 
@@ -122,7 +231,12 @@ class HostPreviewService extends EventEmitter {
     taskPath: string,
     opts?: { script?: string; parentProjectPath?: string }
   ): Promise<{ ok: boolean; error?: string }> {
-    const cwd = path.resolve(taskPath);
+    const resolved = resolvePreviewCwd(taskPath);
+    if (!resolved.ok) {
+      this.emitSetupError(taskId, resolved.error);
+      return { ok: false, error: resolved.error };
+    }
+    const cwd = resolved.cwd;
 
     // Log the resolved path to help debug worktree issues
     log.info?.('[hostPreview] start', {
@@ -229,9 +343,10 @@ class HostPreviewService extends EventEmitter {
         const installArgs = pm === 'npm' ? (hasLock ? ['ci'] : ['install']) : ['install'];
         const inst = spawn(pm, installArgs, {
           cwd,
-          shell: true,
+          shell: resolvePreviewShell(),
           env: { ...process.env, BROWSER: 'none' },
         });
+        this.attachChildStreamGuards(inst, taskId, 'install');
         this.emit('event', { type: 'setup', taskId, status: 'starting' } as HostPreviewEvent);
         const onData = (buf: Buffer) => {
           try {
@@ -309,7 +424,14 @@ class HostPreviewService extends EventEmitter {
 
     const tryStart = async (maxRetries = 3): Promise<{ ok: boolean; error?: string }> => {
       try {
-        const child = spawn(cmd, args, { cwd, env, shell: true });
+        const child = spawn(cmd, args, { cwd, env, shell: resolvePreviewShell() });
+        this.attachChildStreamGuards(child, taskId, 'start');
+        const started = await this.waitForSpawn(child);
+        if (!started.ok) {
+          const message = started.error || `failed to start ${cmd}`;
+          this.emitSetupError(taskId, message);
+          return { ok: false, error: message };
+        }
         this.procs.set(taskId, child);
         this.procCwds.set(taskId, cwd); // Store the cwd for this process
 
@@ -317,6 +439,17 @@ class HostPreviewService extends EventEmitter {
         let sawAddrInUse = false;
         let candidateUrl: string | null = null;
         const startedAt = Date.now();
+        child.on('error', (error) => {
+          const message = toErrorMessage(error);
+          log.error('[hostPreview] child process error', {
+            taskId,
+            cwd,
+            cmd,
+            args,
+            message,
+          });
+          this.emitSetupError(taskId, message);
+        });
 
         const emitSetupLine = (line: string) => {
           try {
@@ -446,9 +579,11 @@ class HostPreviewService extends EventEmitter {
           } catch {}
         });
         return { ok: true };
-      } catch (e: any) {
-        log.error('[hostPreview] failed to start', e);
-        return { ok: false, error: e?.message || String(e) };
+      } catch (error: unknown) {
+        const message = toErrorMessage(error);
+        log.error('[hostPreview] failed to start', error);
+        this.emitSetupError(taskId, message);
+        return { ok: false, error: message };
       }
     };
 
